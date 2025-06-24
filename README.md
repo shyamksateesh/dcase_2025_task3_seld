@@ -8,7 +8,19 @@ In addition, we also introduce the SED-based FilterAugment augmentation method f
 
 ## Citation
 
+If you have any questions, please reach out to us at: `junwei004@e.ntu.edu.sg`
+
 If you found this code useful for your research, please consider citing our papers. 
+
+## Setup
+
+This setup has been tested using Python 3.9.16 and Torch 1.13.1
+
+```
+conda create --name dcase2025_task3 python=3.9.16
+conda activate dcase2025_task3
+pip install -r requirements.txt
+```
 
 ## Dataset
 
@@ -49,6 +61,21 @@ We provide all data augmentation techniques used for this work in `training_util
 
 Do note that these augmentations are designed to be applied to data samples of `torch.tensor`. They accept both 3D and 4D tensors of shape `(batch), channel, time, frequency`. The `FilterAugment` augmentation was originally designed for power spectrograms (in dB). We provide a more generalized version that works with our normalized feature maps in `FilterAugmentNormalized`. 
 
+### Time-Frequency Masking (TFM)
+
+Three types of TFM methods are used, and subsequently combined into a single function `CompositeCutoutTorch`. To swap to the Inter-channel Level-Aware TFM (I-TFM) variants, just set the `use_itfm` flag to be `True`. The individual methods are:
+
+- **RandomCutout** (One large rectangular mask)
+- **RandomCutoutHole** (Many smaller rectangular masks)
+- **SpecAugment** (Masks out entire time/frequency bands)
+
+
+### Frequency Manipulation (FQM)
+
+In our work, we experiment with Frequency Shifting and FilterAugment. To call each individual function please use:
+
+- **RandomShiftUpDownTorch** (Frequency Shifting)
+- **FilterAugmentNormalized** (FilterAugment but generalized to all scales)
 
 ## References and Acknowledgement
 
