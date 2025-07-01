@@ -12,6 +12,16 @@ If you have any questions, please reach out to us at: `junwei004@e.ntu.edu.sg`
 
 If you found this code useful for your research, please consider citing our papers. 
 
+Our [DCASE Challenge Technical Report](https://dcase.community/documents/challenge2025/technical_reports/DCASE2025_Yeow_10_t3.pdf)
+```
+@techreport{Yeow_NTU_task3a_report,
+    Author = "Yeow, Jun-Wei and Tan, Ee-Leng and Peksi, Santi and Gan, Woon-Seng",
+    title = "IMPROVING STEREO 3D SOUND EVENT LOCALIZATION AND DETECTION: PERCEPTUAL FEATURES, STEREO-SPECIFIC DATA AUGMENTATION, AND DISTANCE NORMALIZATION",
+    institution = "DCASE2025 Challenge",
+    year = "2025"
+}
+```
+
 ## Setup
 
 This setup has been tested using Python 3.9.16 and Torch 1.13.1
