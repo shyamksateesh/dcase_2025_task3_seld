@@ -1,0 +1,20 @@
+# Dataset and extracted features
+../DCASE_2025_dataset/
+*.pt
+*.pkl
+
+# Checkpoints — too large, exclude model weights
+checkpoints/*/best_model.pth
+checkpoints/*/events*
+
+# Logs and outputs
+wandb/
+logs/
+outputs/
+outputs_eval_gru/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Keep training_log.csv inside checkpoints
+!checkpoints/*/training_log.csv

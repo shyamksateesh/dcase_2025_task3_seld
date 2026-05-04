@@ -90,8 +90,12 @@ class DataGenerator(Dataset):
 
         # Loop through each fold and collect files
         for fold in self.folds:
-            audio_files += glob.glob(os.path.join(self.feat_dir, f'stereo_dev_normalized/{fold}*.pt'))
-            label_files += glob.glob(os.path.join(self.feat_dir, 'metadata_dev{}/{}*.pt'.format('_adpit' if self.params['multiACCDOA'] else '', fold)))
+            if fold == 'dev-train-realcs':
+                audio_files += glob.glob(os.path.join(self.feat_dir, f'stereo_dev_normalized/fold3*_swap.pt'))
+                label_files += glob.glob(os.path.join(self.feat_dir, 'metadata_dev{}/fold3*_swap.pt'.format('_adpit' if self.params['multiACCDOA'] else '')))
+            else:
+                audio_files += glob.glob(os.path.join(self.feat_dir, f'stereo_dev_normalized/{fold}*.pt'))
+                label_files += glob.glob(os.path.join(self.feat_dir, 'metadata_dev{}/{}*.pt'.format('_adpit' if self.params['multiACCDOA'] else '', fold)))
 
         # Sort files to ensure corresponding audio, video, and label files are in the same order
         audio_files = sorted(audio_files, key=lambda x: x.split('/')[-1])

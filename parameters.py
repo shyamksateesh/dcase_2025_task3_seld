@@ -15,8 +15,8 @@ params = {
     'net_type': 'SELDnet',
 
     # data params
-    'root_dir': 'DCASE2025_SELD_dataset',  # parent directory containing the audio, video and labels directory
-    'feat_dir': 'DCASE2025_SELD_dataset/mel64_dnorm',  # store extracted features here
+    'root_dir': '../DCASE_2025_dataset',  # parent directory containing the audio, video and labels directory
+    'feat_dir': '../DCASE_2025_dataset/mel64_dnorm',  # store extracted features here
 
     'log_dir': 'logs',  # save all logs here like loss and metrics
     'checkpoints_dir': 'checkpoints',  # save trained model checkpoints and config
@@ -25,7 +25,7 @@ params = {
     # audio feature extraction params
     'sampling_rate': 24000,
     'hop_length_s': 0.0125,
-    'nb_mels': 64,
+    'nb_mels': 96,   # Yeow uses 96 mel bins, not 64, so changed that.
     'max_freq': 2000,
 
     # video feature extraction params
@@ -37,16 +37,16 @@ params = {
     'nb_conv_filters': 64,
     'f_pool_size': [4, 4, 2],
     't_pool_size': [2, 2, 2],
-    'dropout': 0.05,
+    'dropout': 0.1,
 
-    'rnn_size': 128,
+    'rnn_size': 256,
     'nb_rnn_layers': 2,
 
     'nb_self_attn_layers': 2,
     'nb_attn_heads': 8,
 
     'nb_fnn_layers': 1,
-    'fnn_size':128,
+    'fnn_size': 256,
 
     'max_polyphony': 3,   # tracks for multiaccdoa
     'nb_classes': 13,
@@ -59,6 +59,8 @@ params = {
     # training params
     'nb_epochs': 100,
     'batch_size': 32,
+    'val_batch_size': 32,   # ← added this
+    'finetune': False,
     'accum_batch': 64,
     'nb_workers': 0,
     'shuffle': True,
@@ -69,7 +71,7 @@ params = {
     'weight_decay': 1e-4,
 
     # folds for training, testing
-    'dev_train_folds': ['fold3', 'fold5', 'fold6'],  # 'fold5' is the synthetic training data. You can skip that if you do not use the synthetic data to train.
+    'dev_train_folds': ['fold3', 'fold5', 'fold6', 'dev-train-realcs'],  # 'fold5' is the synthetic training data. You can skip that if you do not use the synthetic data to train.
     'dev_test_folds': ['fold4'],
 
     # metric params

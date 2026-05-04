@@ -24,6 +24,7 @@ import time
 import training_utils as tu
 import argparse
 import numpy as np
+import csv
 
 
 def setup_model_and_loss(in_feat_shape, device):
@@ -195,10 +196,14 @@ def main(device, args):
     # Start Training Loops
     start_epoch, best_epoch = 0, 0
     best_f_score = float('-inf')
+    csv_path = os.path.join(checkpoints_folder, 'training_log.csv')
+    with open(csv_path, 'w', newline='') as f:
+        csv.writer(f).writerow(['epoch','train_loss','f1','le','de','rde','seld_err'])
     best_seld_err = 1.0
 
     # Set up model, loss, and metrics
     seld_model, seld_loss, seld_metrics = setup_model_and_loss(in_feat_shape=in_feat_shape, device=device)
+    seld_model = seld_model.to(device)  # ← added this line to ensure model is on the correct device after potential DataParallel wrapping
 
     # Set up optimizer and scheduler
     if params['weight_decay'] != 0:
@@ -257,7 +262,11 @@ def main(device, args):
                 val_start_time = time.time()
                 avg_val_loss, metric_scores = val_epoch(seld_model, dev_test_iterator, seld_loss, seld_metrics, output_dir)
                 val_f, val_ang_error, val_dist_error, val_rel_dist_error, val_onscreen_acc, class_wise_scr = metric_scores
-                val_seld_error = ((1 - val_f) + (val_ang_error / 180) + val_rel_dist_error)/3 
+                val_seld_error = ((1 - val_f) + (val_ang_error / 180) + val_rel_dist_error)/3
+                with open(csv_path, 'a', newline='') as f:
+                    csv.writer(f).writerow([epoch+1, avg_train_loss, round(val_f*100,3),
+                             round(val_ang_error,3), round(val_dist_error,3),
+                             round(val_rel_dist_error,4), round(val_seld_error,4)])
                 val_time = time.time() - val_start_time
 
                 # Log validation loss and key metrics
@@ -312,7 +321,12 @@ if __name__ == '__main__':
     # Record the start time
     start_time = time.time()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Device used: {device}")
 
     parser = argparse.ArgumentParser(description='DCASE 2025 Task 3 argument parser')
@@ -353,6 +367,13 @@ if __name__ == '__main__':
     parser.add_argument('--dnorm', action='store_false', help='Distance Normalization')
     parser.add_argument('--multiACCDOA', action='store_false')
     parser.set_defaults(dnorm=True, multiACCDOA=True) # Default always use DNorm and Multi-ACCDOA format
+
+    # Transformer modification args
+    parser.add_argument('--use_transformer', action='store_true', default=False)
+    parser.add_argument('--tr_nhead', type=int, default=4)
+    parser.add_argument('--tr_layers', type=int, default=2)
+    parser.add_argument('--tr_ff_dim', type=int, default=512)
+    parser.add_argument('--tr_rope', action='store_true', default=True)
 
     args = parser.parse_args()
 
