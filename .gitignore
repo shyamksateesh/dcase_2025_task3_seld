@@ -1,0 +1,30 @@
+# Dataset and extracted features
+../DCASE_2025_dataset/
+DCASE2025_SELD_dataset/
+*.pt
+*.pkl
+
+# Checkpoints — do not track large model weights or event logs
+checkpoints/**/best_model.pth
+checkpoints/**/events*
+
+# Logs and outputs
+wandb/
+logs/
+outputs/
+outputs_eval_gru/
+
+# Python cache and system files
+__pycache__/
+*.pyc
+.DS_Store
+
+# Keep training_log.csv inside checkpoints (explicitly allow)
+!checkpoints/**/training_log.csv
+
+# Optional: ignore large video/audio zip files if present
+*.zip
+
+# Local environment / editor files
+.vscode/
+*.iml
