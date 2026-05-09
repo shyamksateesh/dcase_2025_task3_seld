@@ -13,7 +13,6 @@ import torch
 import wandb
 import os
 import subprocess
-import multiprocessing as mp
 from parameters import params
 from model import SELDModel
 from loss import SELDLossADPIT, SELDLossSingleACCDOA
@@ -35,36 +34,37 @@ def debug(msg):
     print(f"[DEBUG] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
 
 
-def _cuda_probe_worker(queue):
-    try:
-        available = torch.cuda.is_available()
-        result = {
-            'ok': True,
-            'available': bool(available),
-            'device_count': int(torch.cuda.device_count()) if available else 0,
-            'device_name': torch.cuda.get_device_name(0) if available else None,
-        }
-    except Exception as error:
-        result = {
-            'ok': False,
-            'available': False,
-            'error': str(error),
-            'device_count': 0,
-            'device_name': None,
-        }
-    queue.put(result)
-
-
 def safe_cuda_probe(timeout_seconds=30):
-    ctx = mp.get_context("spawn")
-    queue = ctx.Queue()
-    process = ctx.Process(target=_cuda_probe_worker, args=(queue,))
-    process.start()
-    process.join(timeout=timeout_seconds)
+    probe_code = (
+        "import torch\n"
+        "result = {'ok': False, 'available': False, 'device_count': 0, 'device_name': None}\n"
+        "try:\n"
+        "    avail = bool(torch.cuda.is_available())\n"
+        "    result['available'] = avail\n"
+        "    if avail:\n"
+        "        x = torch.tensor([1.0], device='cuda')\n"
+        "        _ = float(x.item())\n"
+        "        result['ok'] = True\n"
+        "        result['device_count'] = int(torch.cuda.device_count())\n"
+        "        result['device_name'] = torch.cuda.get_device_name(0)\n"
+        "    else:\n"
+        "        result['ok'] = True\n"
+        "except Exception as e:\n"
+        "    result['error'] = str(e)\n"
+        "import json\n"
+        "print(json.dumps(result))\n"
+    )
 
-    if process.is_alive():
-        process.terminate()
-        process.join(2)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe_code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
         return {
             'ok': False,
             'available': False,
@@ -73,16 +73,42 @@ def safe_cuda_probe(timeout_seconds=30):
             'device_count': 0,
             'device_name': None,
         }
+    except Exception as error:
+        return {
+            'ok': False,
+            'available': False,
+            'error': f"CUDA probe process failed: {error}",
+            'device_count': 0,
+            'device_name': None,
+        }
 
-    if not queue.empty():
-        return queue.get()
+    if completed.returncode != 0:
+        return {
+            'ok': False,
+            'available': False,
+            'error': f"CUDA probe return code {completed.returncode}: {completed.stderr.strip()}",
+            'device_count': 0,
+            'device_name': None,
+        }
+
+    try:
+        import json
+        parsed = json.loads(completed.stdout.strip().splitlines()[-1])
+    except Exception as error:
+        return {
+            'ok': False,
+            'available': False,
+            'error': f"Failed to parse CUDA probe output: {error}; raw={completed.stdout.strip()}",
+            'device_count': 0,
+            'device_name': None,
+        }
 
     return {
-        'ok': False,
-        'available': False,
-        'error': "CUDA probe returned no result",
-        'device_count': 0,
-        'device_name': None,
+        'ok': bool(parsed.get('ok', False)),
+        'available': bool(parsed.get('available', False)),
+        'device_count': int(parsed.get('device_count', 0) or 0),
+        'device_name': parsed.get('device_name'),
+        'error': parsed.get('error'),
     }
 
 
