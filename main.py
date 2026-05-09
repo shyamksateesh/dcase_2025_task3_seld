@@ -486,6 +486,12 @@ if __name__ == '__main__':
 
     device = torch.device("cuda")
     print(f"Device used: {device}")
+    # Enable cuDNN autotuner for potential speedup on fixed-size inputs
+    try:
+        torch.backends.cudnn.benchmark = True
+        debug("Enabled torch.backends.cudnn.benchmark=True")
+    except Exception:
+        debug("Could not enable cuDNN benchmark")
 
     parser = argparse.ArgumentParser(description='DCASE 2025 Task 3 argument parser')
 

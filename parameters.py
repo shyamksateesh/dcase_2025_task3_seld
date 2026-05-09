@@ -62,11 +62,11 @@ params = {
 
     # training params
     'nb_epochs': 100,
-    'batch_size': 32,
+    'batch_size': 128,
     'accum_batch': 64,
-    'nb_workers': 0,
+    'nb_workers': 8,
     'shuffle': True,
-    'persistent_workers': False,
+    'persistent_workers': True,
     'finetune': False,
 
     # optimizer params
