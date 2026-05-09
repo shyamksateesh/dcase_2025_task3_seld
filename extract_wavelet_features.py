@@ -22,6 +22,10 @@ def main():
     parser.add_argument('--split', type=str, default='dev', help='Data split: dev, eval')
     parser.add_argument('--normalize_only', action='store_true', default=False,
                         help='Skip feature extraction and labels; only normalize already extracted features')
+    parser.add_argument('--num_shards', type=int, default=1, help='Total number of parallel extraction shards')
+    parser.add_argument('--shard_id', type=int, default=0, help='Shard id for this job (0-based)')
+    parser.add_argument('--only_extract', action='store_true', default=False,
+                        help='Only extract features (useful for running multiple parallel extract jobs). Run normalization separately after all shards complete.')
     
     args = parser.parse_args()
     
@@ -76,15 +80,24 @@ def main():
     if args.normalize_only:
         print("Step 1: Skipping feature extraction (normalize-only mode)...")
         print("Step 2: Skipping label extraction (normalize-only mode)...")
+        print("Step 3: Preprocessing (normalizing) features...")
+        feature_extractor.preprocess_features(split=args.split)
     else:
         print("Step 1: Extracting audio features...")
-        feature_extractor.extract_features(split=args.split)
+        feature_extractor.extract_features(split=args.split, num_shards=args.num_shards, shard_id=args.shard_id)
 
-        print("\nStep 2: Extracting labels...")
-        feature_extractor.extract_labels(split=args.split)
-    
-    print("\nStep 3: Preprocessing (normalizing) features...")
-    feature_extractor.preprocess_features(split=args.split)
+        if args.only_extract or args.num_shards > 1:
+            print("\nNotice: You ran extraction in shard/only-extract mode.\nTo finish the pipeline, run the labels extraction and normalization once all shards have completed:\n")
+            print("  # Extract labels (single job or multiple, skipped duplicates will be ignored):")
+            print("  python extract_wavelet_features.py --split {} --normalize_only".format(args.split))
+            print("\nOr run normalization only after all feature shards are done:")
+            print("  python extract_wavelet_features.py --split {} --normalize_only".format(args.split))
+        else:
+            print("\nStep 2: Extracting labels...")
+            feature_extractor.extract_labels(split=args.split)
+
+            print("\nStep 3: Preprocessing (normalizing) features...")
+            feature_extractor.preprocess_features(split=args.split)
     
     print(f"\n{'='*60}")
     print(f"✓ Feature extraction complete!")

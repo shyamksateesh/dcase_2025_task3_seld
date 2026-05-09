@@ -63,7 +63,7 @@ class SELDFeatureExtractor():
         print(f"Loading features from: {self.feat_dir}")
 
 
-    def extract_features(self, split='dev'):
+    def extract_features(self, split='dev', num_shards=1, shard_id=0, file_list=None):
         """
         Extracts features
         Args:
@@ -81,6 +81,21 @@ class SELDFeatureExtractor():
 
         output_dir = os.path.join(self.feat_dir, f'stereo_{split}')
         os.makedirs(output_dir, exist_ok=True)
+        # Allow optional external file list (one path per line) to control which files to process
+        if file_list is not None:
+            with open(file_list, 'r') as fh:
+                audio_files = [l.strip() for l in fh if l.strip()]
+
+        # Sort for deterministic sharding and reproducibility
+        audio_files = sorted(audio_files)
+
+        # If sharding is requested, select the subset assigned to this shard.
+        if num_shards is None:
+            num_shards = 1
+        if num_shards > 1:
+            if shard_id < 0 or shard_id >= num_shards:
+                raise ValueError(f"shard_id must be in [0, num_shards-1]. Got shard_id={shard_id}, num_shards={num_shards}")
+            audio_files = [f for i, f in enumerate(audio_files) if (i % num_shards) == shard_id]
 
         with Progress() as progress:
             task = progress.add_task(f"[cyan]Processing {len(audio_files)} audio files ({split})", total=len(audio_files))
