@@ -205,7 +205,7 @@ def val_epoch(seld_model, dev_test_iterator, seld_loss, seld_metrics, output_dir
                 val_loss_per_epoch += loss.item()
 
                 # save predictions to csv files for metric calculations
-                start = j * params['val_batch_size']
+                start = j * params['val_batch']
                 end = start + logits.size(0)
                 utils.write_logits_to_dcase_format(logits, params, output_dir, dev_test_iterator.dataset.label_files[start: end])
                 progress.update(task, advance=1)
@@ -288,7 +288,7 @@ def main(device, args):
 
     dev_test_dataset = DataGenerator(params=params, mode='dev_test')
     debug("dev_test_dataset created")
-    dev_test_iterator = DataLoader(dataset=dev_test_dataset, batch_size=params['val_batch_size'], num_workers=params['nb_workers'], shuffle=False, drop_last=False)
+    dev_test_iterator = DataLoader(dataset=dev_test_dataset, batch_size=params['val_batch'], num_workers=params['nb_workers'], shuffle=False, drop_last=False)
     debug("dev_test_iterator created")
 
     # Getting the input feature shape
@@ -453,16 +453,38 @@ if __name__ == '__main__':
     except Exception as error:
         debug(f"nvidia-smi probe exception: {error}")
 
-    debug("About to check torch.cuda.is_available() via safe probe")
-    cuda_probe = safe_cuda_probe(timeout_seconds=30)
-    if not cuda_probe.get('ok', False):
-        debug(f"CUDA probe warning: {cuda_probe.get('error', 'unknown error')}")
-    debug(f"CUDA available = {cuda_probe.get('available', False)}")
-    if cuda_probe.get('available', False):
-        debug(f"CUDA device_count = {cuda_probe.get('device_count', 0)}")
-        debug(f"CUDA device_0 = {cuda_probe.get('device_name', '<unknown>')}")
+    cuda_probe_timeout_seconds = int(os.environ.get("CUDA_PROBE_TIMEOUT_SECONDS", "30"))
+    gpu_wait_timeout_seconds = int(os.environ.get("GPU_WAIT_TIMEOUT_SECONDS", "600"))
+    gpu_wait_interval_seconds = int(os.environ.get("GPU_WAIT_INTERVAL_SECONDS", "5"))
+    debug(
+        f"Waiting for GPU via safe probe "
+        f"(probe_timeout={cuda_probe_timeout_seconds}s, max_wait={gpu_wait_timeout_seconds}s, interval={gpu_wait_interval_seconds}s)"
+    )
 
-    device = torch.device("cuda" if cuda_probe.get('available', False) else "cpu")
+    wait_start = time.time()
+    cuda_probe = {'available': False, 'ok': False}
+    while True:
+        cuda_probe = safe_cuda_probe(timeout_seconds=cuda_probe_timeout_seconds)
+        if cuda_probe.get('available', False):
+            break
+
+        elapsed = int(time.time() - wait_start)
+        if not cuda_probe.get('ok', False):
+            debug(f"CUDA probe warning: {cuda_probe.get('error', 'unknown error')}")
+        debug(f"GPU not ready yet (elapsed={elapsed}s); retrying in {gpu_wait_interval_seconds}s")
+
+        if elapsed >= gpu_wait_timeout_seconds:
+            debug(f"Timed out waiting for GPU after {elapsed}s")
+            print("[FATAL] GPU was not available before timeout. Exiting without CPU fallback.", flush=True)
+            sys.exit(3)
+
+        time.sleep(gpu_wait_interval_seconds)
+
+    debug(f"CUDA available = {cuda_probe.get('available', False)}")
+    debug(f"CUDA device_count = {cuda_probe.get('device_count', 0)}")
+    debug(f"CUDA device_0 = {cuda_probe.get('device_name', '<unknown>')}")
+
+    device = torch.device("cuda")
     print(f"Device used: {device}")
 
     parser = argparse.ArgumentParser(description='DCASE 2025 Task 3 argument parser')
