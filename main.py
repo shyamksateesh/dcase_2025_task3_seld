@@ -11,6 +11,9 @@ Date: January 2025
 import os.path
 import torch
 import wandb
+import os
+import subprocess
+import multiprocessing as mp
 from parameters import params
 from model import SELDModel
 from loss import SELDLossADPIT, SELDLossSingleACCDOA
@@ -30,6 +33,57 @@ import numpy as np
 import sys
 def debug(msg):
     print(f"[DEBUG] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
+
+
+def _cuda_probe_worker(queue):
+    try:
+        available = torch.cuda.is_available()
+        result = {
+            'ok': True,
+            'available': bool(available),
+            'device_count': int(torch.cuda.device_count()) if available else 0,
+            'device_name': torch.cuda.get_device_name(0) if available else None,
+        }
+    except Exception as error:
+        result = {
+            'ok': False,
+            'available': False,
+            'error': str(error),
+            'device_count': 0,
+            'device_name': None,
+        }
+    queue.put(result)
+
+
+def safe_cuda_probe(timeout_seconds=30):
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    process = ctx.Process(target=_cuda_probe_worker, args=(queue,))
+    process.start()
+    process.join(timeout=timeout_seconds)
+
+    if process.is_alive():
+        process.terminate()
+        process.join(2)
+        return {
+            'ok': False,
+            'available': False,
+            'timeout': True,
+            'error': f"CUDA probe timed out after {timeout_seconds}s",
+            'device_count': 0,
+            'device_name': None,
+        }
+
+    if not queue.empty():
+        return queue.get()
+
+    return {
+        'ok': False,
+        'available': False,
+        'error': "CUDA probe returned no result",
+        'device_count': 0,
+        'device_name': None,
+    }
 
 
 def setup_model_and_loss(in_feat_shape, device):
@@ -353,7 +407,36 @@ if __name__ == '__main__':
     start_time = time.time()
 
     debug("Script started")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    debug(f"torch.__version__ = {torch.__version__}")
+    debug(f"torch.version.cuda = {torch.version.cuda}")
+    debug(f"CUDA_VISIBLE_DEVICES = {os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}")
+
+    try:
+        nvidia_smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if nvidia_smi.returncode == 0:
+            debug(f"nvidia-smi: {nvidia_smi.stdout.strip()}")
+        else:
+            debug(f"nvidia-smi failed: {nvidia_smi.stderr.strip()}")
+    except Exception as error:
+        debug(f"nvidia-smi probe exception: {error}")
+
+    debug("About to check torch.cuda.is_available() via safe probe")
+    cuda_probe = safe_cuda_probe(timeout_seconds=30)
+    if not cuda_probe.get('ok', False):
+        debug(f"CUDA probe warning: {cuda_probe.get('error', 'unknown error')}")
+    debug(f"CUDA available = {cuda_probe.get('available', False)}")
+    if cuda_probe.get('available', False):
+        debug(f"CUDA device_count = {cuda_probe.get('device_count', 0)}")
+        debug(f"CUDA device_0 = {cuda_probe.get('device_name', '<unknown>')}")
+
+    device = torch.device("cuda" if cuda_probe.get('available', False) else "cpu")
     print(f"Device used: {device}")
 
     parser = argparse.ArgumentParser(description='DCASE 2025 Task 3 argument parser')
