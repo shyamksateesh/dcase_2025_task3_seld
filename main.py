@@ -7,6 +7,7 @@ including data preparation, model training, and evaluation.
 Author: Parthasaarathy Sudarsanam, Audio Research Group, Tampere University
 Date: January 2025
 """
+
 import os.path
 import torch
 import wandb
@@ -24,6 +25,11 @@ import time
 import training_utils as tu
 import argparse
 import numpy as np
+
+# Debug utility
+import sys
+def debug(msg):
+    print(f"[DEBUG] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
 
 
 def setup_model_and_loss(in_feat_shape, device):
@@ -135,10 +141,12 @@ def val_epoch(seld_model, dev_test_iterator, seld_loss, seld_metrics, output_dir
 
 
 def main(device, args):
+    debug("Starting main()")
 
     # Convert and update the params dictionary
     arg_dict = {k: v for k,v in vars(args).items() if v is not None}
     params.update(arg_dict)
+    debug("Params updated from args")
     # If using wavelet features and user provided scale count, set nb_mels
     # so downstream model shape calculations remain consistent.
     if params.get('use_wavelet', False) and params.get('n_wavelet_scales') is not None:
@@ -151,22 +159,29 @@ def main(device, args):
     # Adjust number of workers based on the system.
     if platform.system() == 'Linux': 
         params['nb_workers'] = 4
+    debug("Set nb_workers")
 
     # Set up directories for storing model checkpoints, predictions(output_dir), and create a summary writer
     checkpoints_folder, output_dir, summary_writer = utils.setup(params)
     print(f"Saving best model in: {checkpoints_folder}")
+    debug("Directories and summary writer set up")
 
     # Feature extraction code.
     feat_folder = (f"mel{params['nb_mels']}" if params['nb_mels'] else "linspec") + ("_wavelet" if params.get('use_wavelet', False) else "") + ("_gamma" if params['gamma'] else "") + \
                   ("_ipd" if params['ipd'] else "") + ("_iv" if params['iv'] else "") + ("_slite" if params['slite'] else "") + \
                   ("_ms" if params['ms'] else "") + ("_dnorm" if params['dnorm'] else "") 
     params['feat_dir'] = os.path.join(params['root_dir'], feat_folder)
+    debug(f"Feature directory: {params['feat_dir']}")
 
     # Set up feature extractor and preprocessing
     feature_extractor = SELDFeatureExtractor(params)
+    debug("FeatureExtractor created")
     feature_extractor.extract_features(split='dev')
+    debug("Features extracted")
     feature_extractor.extract_labels(split='dev')
+    debug("Labels extracted")
     feature_extractor.preprocess_features(split='dev')
+    debug("Features preprocessed")
 
     # Setup augmentations if enabled.
     n_aug_channels = 4 if params['ms'] else 2
@@ -182,17 +197,23 @@ def main(device, args):
         transforms = tu.CompositeEverythingTorch(always_apply=False, p=0.5, aug_channels=n_aug_channels, use_itfm=params['itfm'])
     else:
         transforms = None
+    debug("Augmentations set up")
 
     # Set up dev_train and dev_test data iterator
     dev_train_dataset = DataGenerator(params=params, mode='dev_train', transform=transforms)
+    debug("dev_train_dataset created")
     dev_train_iterator = DataLoader(dataset=dev_train_dataset, batch_size=params['batch_size'], num_workers=params['nb_workers'], shuffle=params['shuffle'],
                                     drop_last=False, pin_memory=True)
+    debug("dev_train_iterator created")
 
     dev_test_dataset = DataGenerator(params=params, mode='dev_test')
+    debug("dev_test_dataset created")
     dev_test_iterator = DataLoader(dataset=dev_test_dataset, batch_size=params['val_batch_size'], num_workers=params['nb_workers'], shuffle=False, drop_last=False)
+    debug("dev_test_iterator created")
 
     # Getting the input feature shape
     first_batch = next(iter(dev_train_iterator))
+    debug("First batch loaded from dev_train_iterator")
     in_feat_shape, out_feat_shape = first_batch[0].shape, first_batch[1].shape
     print(f"Number of batches: {len(dev_train_iterator)}\nIn Shape: {in_feat_shape}\tOut Shape: {out_feat_shape}")
 
@@ -202,9 +223,12 @@ def main(device, args):
     best_seld_err = 1.0
 
     # Set up model, loss, and metrics
+    debug("Setting up model, loss, and metrics")
     seld_model, seld_loss, seld_metrics = setup_model_and_loss(in_feat_shape=in_feat_shape, device=device)
+    debug("Model, loss, and metrics set up")
 
     # Set up optimizer and scheduler
+    debug("Setting up optimizer and scheduler")
     if params['weight_decay'] != 0:
         no_decay = ["bias", "bn.weight", "bn.bias", "ln.weight", "ln.bias"]
         decay_params = []
@@ -229,18 +253,24 @@ def main(device, args):
     step_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=params['learning_rate'], total_steps=int(total_steps))
     print(f"OneCycleLR scheduler used (Total Number of Steps: {total_steps})")
     print(f"Distance Normalized: {params['dnorm']}\nITFM: {params['itfm']}\n"
-          f"Cutout: {params['cutout']}\nFreqshift: {params['freqshift']}\n"
-          f"FiltAug: {params['filtaug']}\nCompFreq: {params['compfreq']}\nAllAug: {params['alltrans']}\n")
+        f"Cutout: {params['cutout']}\nFreqshift: {params['freqshift']}\n"
+        f"FiltAug: {params['filtaug']}\nCompFreq: {params['compfreq']}\nAllAug: {params['alltrans']}\n")
+    debug("Scheduler set up")
 
     # Setup the W&B run
+    debug("Initializing wandb")
     wandb.init(project=params['project'], name=params['exp'], config=params, reinit=True)
     wandb.watch(seld_model, log='all', log_freq=100)
+    debug("wandb initialized and watching model")
 
     try:
+        debug("Starting training loop")
         for epoch in range(start_epoch, params['nb_epochs']):
             # ------------- Training -------------- #
             train_start_time = time.time()
+            debug(f"Epoch {epoch+1}: Training epoch started")
             avg_train_loss = train_epoch(seld_model=seld_model, dev_train_iterator=dev_train_iterator, optimizer=optimizer, seld_loss=seld_loss, step_scheduler=step_scheduler)
+            debug(f"Epoch {epoch+1}: Training epoch finished")
             train_time = time.time() - train_start_time
 
             # Log training loss to W&B
@@ -258,8 +288,10 @@ def main(device, args):
 
             should_validate = (is_regular_validation_time or is_final_phase or is_full_training_midway)
             if should_validate:
+                debug(f"Epoch {epoch+1}: Validation started")
                 val_start_time = time.time()
                 avg_val_loss, metric_scores = val_epoch(seld_model, dev_test_iterator, seld_loss, seld_metrics, output_dir)
+                debug(f"Epoch {epoch+1}: Validation finished")
                 val_f, val_ang_error, val_dist_error, val_rel_dist_error, val_onscreen_acc, class_wise_scr = metric_scores
                 val_seld_error = ((1 - val_f) + (val_ang_error / 180) + val_rel_dist_error)/3 
                 val_time = time.time() - val_start_time
@@ -275,6 +307,7 @@ def main(device, args):
             # ------------- Save model if validation f score improves -------------#
             indicator = (val_seld_error <= best_seld_err) if params['finetune'] else (should_validate and val_f >= best_f_score)  
             if indicator:
+                debug(f"Epoch {epoch+1}: Model improved and saved")
                 best_f_score = val_f
                 best_epoch = epoch
                 best_seld_err = val_seld_error
@@ -297,6 +330,9 @@ def main(device, args):
 
     except KeyboardInterrupt:
         print("Training ended prematurely. Calculating results now.")
+    except Exception as e:
+        debug(f"Exception occurred: {e}")
+        raise
 
     # Evaluate the best model on dev-test.
     print(f"Loading best model checkpoint from: {os.path.join(checkpoints_folder, 'best_model.pth')}\n\tBest Epoch: {best_epoch + 1}\tBest F-score: {best_f_score * 100:.2f}")
@@ -316,6 +352,7 @@ if __name__ == '__main__':
     # Record the start time
     start_time = time.time()
 
+    debug("Script started")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device used: {device}")
 
