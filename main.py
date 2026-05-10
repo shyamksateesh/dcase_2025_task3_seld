@@ -163,7 +163,8 @@ def train_epoch(seld_model, dev_train_iterator, optimizer, seld_loss, step_sched
 
         for batch_idx, (input_features, labels) in enumerate(dev_train_iterator):
 
-            input_features, labels = input_features.to(device), labels.to(device)
+            input_features = input_features.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
             logits = seld_model(input_features)
 
@@ -195,7 +196,8 @@ def val_epoch(seld_model, dev_test_iterator, seld_loss, seld_metrics, output_dir
         task = progress.add_task("[green]Validation:\t", total=len(dev_test_iterator))
         with torch.no_grad():
             for j, (input_features, labels) in enumerate(dev_test_iterator):
-                input_features, labels = input_features.to(device), labels.to(device)
+                input_features = input_features.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
 
                 # Forward pass
                 logits = seld_model(input_features)
@@ -237,9 +239,11 @@ def main(device, args):
         print(f"\t{key}: {value}")
 
     # Adjust number of workers based on the system.
-    if platform.system() == 'Linux': 
-        params['nb_workers'] = 4
-    debug("Set nb_workers")
+    # if platform.system() == 'Linux': 
+    #     params['nb_workers'] = 4
+    # Keep user-configured worker count from CLI/parameters.py.
+    # (Previously this was hard-overridden to 4 on Linux.)
+    debug(f"Using nb_workers={params['nb_workers']}")
 
     # Set up directories for storing model checkpoints, predictions(output_dir), and create a summary writer
     checkpoints_folder, output_dir, summary_writer = utils.setup(params)
@@ -282,13 +286,34 @@ def main(device, args):
     # Set up dev_train and dev_test data iterator
     dev_train_dataset = DataGenerator(params=params, mode='dev_train', transform=transforms)
     debug("dev_train_dataset created")
-    dev_train_iterator = DataLoader(dataset=dev_train_dataset, batch_size=params['batch_size'], num_workers=params['nb_workers'], shuffle=params['shuffle'],
-                                    drop_last=False, pin_memory=True)
+    train_loader_kwargs = {
+        'dataset': dev_train_dataset,
+        'batch_size': params['batch_size'],
+        'num_workers': params['nb_workers'],
+        'shuffle': params['shuffle'],
+        'drop_last': False,
+        'pin_memory': True,
+    }
+    if params['nb_workers'] > 0:
+        train_loader_kwargs['persistent_workers'] = params.get('persistent_workers', True)
+        train_loader_kwargs['prefetch_factor'] = params.get('prefetch_factor', 4)
+    dev_train_iterator = DataLoader(**train_loader_kwargs)
     debug("dev_train_iterator created")
 
     dev_test_dataset = DataGenerator(params=params, mode='dev_test')
     debug("dev_test_dataset created")
-    dev_test_iterator = DataLoader(dataset=dev_test_dataset, batch_size=params['val_batch'], num_workers=params['nb_workers'], shuffle=False, drop_last=False)
+    val_loader_kwargs = {
+        'dataset': dev_test_dataset,
+        'batch_size': params['val_batch'],
+        'num_workers': params['nb_workers'],
+        'shuffle': False,
+        'drop_last': False,
+        'pin_memory': True,
+    }
+    if params['nb_workers'] > 0:
+        val_loader_kwargs['persistent_workers'] = params.get('persistent_workers', True)
+        val_loader_kwargs['prefetch_factor'] = params.get('prefetch_factor', 4)
+    dev_test_iterator = DataLoader(**val_loader_kwargs)
     debug("dev_test_iterator created")
 
     # Getting the input feature shape

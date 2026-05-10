@@ -64,9 +64,10 @@ params = {
     'nb_epochs': 100,
     'batch_size': 128,
     'accum_batch': 64,
-    'nb_workers': 8,
+    'nb_workers': 12,
     'shuffle': True,
     'persistent_workers': True,
+    'prefetch_factor': 4,
     'finetune': False,
 
     # optimizer params
