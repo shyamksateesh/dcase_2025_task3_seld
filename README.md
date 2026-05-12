@@ -1,4 +1,4 @@
-# DCASE 2025 Task 3 — Stereo SELD: Reproduction & Transformer Modification
+# DCASE 2025 Task 3 — Stereo SELD: Reproduction, Transformer, and Wavelet Features
 ### CS-GY 6933 Machine Listening · NYU · Spring 2026
 **Team:** Mohammed Shipat Uddin, Kevin Mai, Sanjay Menon, Shyam Krishna Sateesh  
 **Base Repository:** [itsjunwei/NTU_SNTL_Task3](https://github.com/itsjunwei/NTU_SNTL_Task3) (Yeow et al., DCASE 2025)
@@ -14,9 +14,10 @@
 6. [Data Preparation](#data-preparation)
 7. [Running the Yeow GRU Baseline](#running-the-yeow-gru-baseline)
 8. [Running the Transformer Modification](#running-the-transformer-modification)
-9. [Results](#results)
-10. [Architecture Details](#architecture-details)
-11. [Known Issues & Fixes](#known-issues--fixes)
+9. [Running Transformer and Wavelet Features](#running-transformer-and-wavelet-features)
+10. [Results](#results)
+11. [Architecture Details](#architecture-details)
+12. [Known Issues & Fixes](#known-issues--fixes)
 
 ---
 
@@ -28,6 +29,7 @@ This repository implements and extends the Yeow et al. DCASE 2025 Task 3 submiss
 1. Reproduced the Yeow et al. baseline (MSIC features + FilterAugment) on real data only
 2. Applied Audio Channel Swapping (ACS) augmentation to double directional training data
 3. Replaced the biGRU + MHSA sequence model with a **Transformer Encoder using RoPE positional encoding**
+4. Added optional **Continuous Wavelet Transform (CWT) scalogram features** as an alternative to mel spectrogram features
 
 **Hardware:** MacBook M3 Pro (Apple Silicon, MPS backend)
 
@@ -68,11 +70,12 @@ project/
     │   └── dev-train-realcs/    ← _swap.csv labels (ACS generated)
     ├── stereo_eval/
     │   └── eval/
-    └── mel96_gamma_iv_ms_dnorm/ ← Cached extracted features (auto-generated)
-        ├── stereo_dev/          ← Raw .pt feature tensors
-        ├── stereo_dev_normalized/ ← Normalized .pt tensors
-        ├── metadata_dev_adpit/  ← Multi-ACCDOA label tensors
-        └── scaler_dev.pkl       ← Fitted StandardScaler
+    ├── mel96_gamma_iv_ms_dnorm/ ← Cached MSIC mel features (auto-generated)
+    │   ├── stereo_dev/          ← Raw .pt feature tensors
+    │   ├── stereo_dev_normalized/ ← Normalized .pt tensors
+    │   ├── metadata_dev_adpit/  ← Multi-ACCDOA label tensors
+    │   └── scaler_dev.pkl       ← Fitted StandardScaler
+    └── mel128_wavelet_dnorm/    ← Cached CWT wavelet features when --use_wavelet is enabled
 ```
 
 ---
@@ -92,10 +95,14 @@ pip install torch torchvision torchaudio
 # Install remaining dependencies (skip torch line from requirements.txt)
 pip install joblib==1.4.0 librosa==0.10.1 numpy==1.22.4 pandas==2.0.3 \
     rich==14.0.0 scikit-learn==1.3.2 soundfile==0.12.1 \
-    torchinfo==1.8.0 tqdm==4.64.1 wandb==0.20.1 tensorboard scipy
+    torchinfo==1.8.0 tqdm==4.64.1 wandb==0.20.1 tensorboard scipy \
+    PyWavelets==1.4.1
 
 # Verify torch and MPS
 python -c "import torch; print(torch.__version__); print(torch.backends.mps.is_available())"
+
+# Verify wavelet dependency
+python -c "import pywt; print(pywt.__version__)"
 ```
 
 > **Critical:** Always use `python` not `python3` inside this conda environment. On macOS with Homebrew, `python3` resolves to the system Python (3.13), not the conda environment.
@@ -143,10 +150,15 @@ Changes from original:
 
 # Update training folds to include ACS data
 'dev_train_folds': ['fold3', 'dev-train-realcs'],
+
+# Wavelet feature defaults
+'use_wavelet': False,
+'wavelet': 'morl',
+'n_wavelet_scales': 128,
 ```
 
 ### `main.py`
-Three changes:
+Changes:
 
 **1. Fix model import (got corrupted at some point):**
 ```python
@@ -196,6 +208,18 @@ parser.add_argument('--tr_layers', type=int, default=2)
 parser.add_argument('--tr_ff_dim', type=int, default=512)
 parser.add_argument('--tr_rope', action='store_true', default=True)
 ```
+
+**6. Add Wavelet argparse arguments:**
+```python
+parser.add_argument('--use_wavelet', action='store_true', default=False)
+parser.add_argument('--wavelet', type=str, default='morl')
+parser.add_argument('--n_wavelet_scales', type=int, default=None)
+```
+
+### `extract_features.py`
+Adds a wavelet feature path that computes CWT magnitude scalograms independently for left and right channels, frames them with the same hop-length timing as the STFT/mel path, and caches them in a separate feature directory so mel and wavelet experiments do not overwrite each other.
+
+Current wavelet mode supports stereo wavelet scalograms only. Binaural STFT-derived feature flags such as `--ipd`, `--gamma`, `--iv`, `--slite`, and `--ms` are not supported together with `--use_wavelet`.
 
 ### `data_generator.py`
 Fix `get_feature_files()` to handle the `dev-train-realcs` ACS fold (files are named `fold3_*_swap.pt` inside a differently-named folder):
@@ -348,6 +372,48 @@ Total params: 1,801,589
 
 ---
 
+## Running Transformer and Wavelet Features
+
+Wavelet mode replaces the default mel/MSIC feature stack with stereo CWT scalograms. This is useful for testing whether multi-scale time-frequency features capture transients and music-like structure better than the Fourier/mel front end.
+
+```bash
+WANDB_MODE=offline python main.py \
+  --exp new_wavelet_exp_2 \
+  --use_wavelet \
+  --wavelet morl \
+  --n_wavelet_scales 128 \
+  --nb_epochs 50 \
+  --use_transformer \
+  --tr_nhead 4 \
+  --tr_layers 3 \
+  --tr_ff_dim 512 \
+  --tr_rope \
+  --filtaug
+```
+
+**Wavelet-specific flags:**
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `--use_wavelet` | (bool) | Use CWT scalogram features instead of mel spectrogram features |
+| `--wavelet` | `morl` | Wavelet family passed to PyWavelets; `morl` is Morlet |
+| `--n_wavelet_scales` | 128 | Number of CWT scales/frequency bins |
+
+**Important compatibility note:** do not combine `--use_wavelet` with `--ms`, `--iv`, `--gamma`, `--ipd`, or `--slite`. Those flags depend on STFT-derived binaural features and currently raise `NotImplementedError` in the wavelet path.
+
+**Expected startup differences:**
+```
+use_wavelet: True
+wavelet: morl
+n_wavelet_scales: 128
+use_transformer: True
+tr_nhead: 4, tr_layers: 3, tr_ff_dim: 512, tr_rope: True
+In Shape: torch.Size([64, 2, 401, 128])
+```
+
+The first wavelet run builds a separate cache, for example `mel128_wavelet_dnorm/`, so it does not reuse or overwrite the `mel96_gamma_iv_ms_dnorm/` MSIC cache. Subsequent wavelet runs with the same feature settings should skip extraction.
+
+---
+
 ## Results
 
 All experiments trained on: fold3 (real recordings, dev-train-sony + dev-train-tau) + dev-train-realcs (ACS augmented), validated on fold4.
@@ -420,6 +486,22 @@ Channel 6: MSC = |Φ_LR|²/(Φ_LL·Φ_RR+ε), Mel-projected  (T=400, F=96)
 Input tensor: (6, 400, 96)
 ```
 
+### Input Feature Stack (Wavelet CWT — 2 channels)
+
+```
+Stereo WAV (24kHz, 5s)
+  ↓ per-channel Continuous Wavelet Transform via PyWavelets
+  ↓ magnitude coefficients over configured scales
+  ↓ hop-length frame aggregation to match the training timeline
+
+Channel 1: CWT scalogram |W_L(scale, t)|  (T≈400, scales=128)
+Channel 2: CWT scalogram |W_R(scale, t)|  (T≈400, scales=128)
+
+Input tensor with --n_wavelet_scales 128: (2, 400, 128)
+```
+
+Wavelet mode currently uses only the left/right scalogram channels. It does not include MSIC channels, IPD, coherence/gamma, intensity vector, SALSA-Lite, or Mid-Side features.
+
 ### GRU Model (Baseline)
 
 ```
@@ -453,6 +535,8 @@ Output: (B, 50, 117)  [identical output shape]
 Total params: ~1.80M
 ```
 
+With `--use_wavelet --n_wavelet_scales 128`, the Transformer keeps the same temporal encoder design but receives `(B, 2, 401, 128)` input. After the convolutional blocks, the flattened feature dimension becomes `64 × 4 = 256`, so the Transformer can use the same `d_model=256` configuration without the `192→256` projection used by the 6-channel, 96-mel MSIC setup.
+
 ### RoPE Positional Encoding
 
 Rotary Position Embedding (Su et al. 2021) encodes **relative** temporal position by rotating Q and K vectors before the attention dot-product:
@@ -480,6 +564,9 @@ RoPE is preferred over sinusoidal encoding for audio because it encodes the temp
 | `dropout: 0.05` despite setting 0.1 in parameters.py | argparse `--dropout` default (0.05) overwrites params | Pass `--dropout 0.1` explicitly in CLI |
 | ACS files not loaded during training | `data_generator.py` globs `fold*` prefix only | Add `if fold == 'dev-train-realcs'` branch with `fold3*_swap.pt` glob |
 | `pin_memory` warning on MPS | PyTorch MPS doesn't support pinned memory | Warning only, not an error — safe to ignore |
+| `ModuleNotFoundError: No module named 'pywt'` | PyWavelets not installed | Install `PyWavelets==1.4.1` or run the dependency install command above |
+| `NotImplementedError` with `--use_wavelet --gamma` or similar | Wavelet mode does not support STFT-derived binaural feature flags yet | Remove `--ms`, `--iv`, `--gamma`, `--ipd`, and `--slite` when using `--use_wavelet` |
+| Wavelet input shape mismatch | Cached features were created with a different scale count or feature mode | Use a new experiment/cache setting or clear the matching wavelet feature cache before rerunning |
 
 ---
 
