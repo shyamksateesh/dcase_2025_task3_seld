@@ -19,6 +19,7 @@ import torch
 from scipy import stats
 from scipy.optimize import linear_sum_assignment
 import warnings
+import pywt
 
 
 def setup(params):
@@ -67,7 +68,8 @@ def load_audio(audio_file, sampling_rate):
 
 def extract_stereo_features(audio, sr: int = 24000, n_fft: int = 512, hop_length: int = 300, win_length: int = 512, 
                             nb_mels: int = 64, max_freq: int = 2000, use_gamma: bool = False, use_ipd: bool = False, 
-                            use_iv: bool = False, use_slite: bool = False, use_ms: bool = False):
+                            use_iv: bool = False, use_slite: bool = False, use_ms: bool = False,
+                            use_wavelet: bool = False, wavelet: str = 'morl', n_wavelet_scales: int = None):
     """
     Extract stereo audio features. Mel spectrograms are always extracted.
     Optional interaural features include ILDs, coherence (gamma), and IPDs.
@@ -90,6 +92,12 @@ def extract_stereo_features(audio, sr: int = 24000, n_fft: int = 512, hop_length
         np.ndarray: (n_feature_channels, time_bins, freq_bins)
     """
 
+    # Wavelet-based scalogram pathway: optionally compute continuous wavelet transform
+    # as an alternative to STFT/Mel spectrograms. NOTE: binaural features like IPD,
+    # gamma, IV, SALSA-Lite and MS are STFT-based and not supported in wavelet mode.
+    # We aggregate the scalogram into frames matching the STFT hop length by
+    # averaging within each hop window so the time resolution matches the rest of the pipeline.
+
     # Validate that the audio is stereo
     if audio.shape[0] != 2:
         raise ValueError("Input audio must have two channels (shape: (2, n_samples)).")
@@ -105,6 +113,48 @@ def extract_stereo_features(audio, sr: int = 24000, n_fft: int = 512, hop_length
                 W[i, 193 + (i - 192) * 8: 193 + (i - 192) * 8 + 7] = 1/8
 
     # Compute the STFT for each channel (each output has shape (F, T))
+    # If a wavelet-based representation was requested, a caller should have
+    # passed `use_wavelet=True` and optional `wavelet` and `n_wavelet_scales`.
+    # We'll try to read those from the locals() — callers added them as kwargs.
+    use_wavelet = locals().get('use_wavelet', False)
+    wavelet = locals().get('wavelet', 'morl')
+    n_wavelet_scales = locals().get('n_wavelet_scales', nb_mels if nb_mels else 64)
+
+    if use_wavelet:
+        # Do not support binaural STFT-derived features in wavelet mode
+        if use_gamma or use_ipd or use_iv or use_slite or use_ms:
+            raise NotImplementedError("Wavelet feature path does not support binaural features (ipd/gamma/iv/slite/ms) yet.")
+
+        # Compute CWT per channel and aggregate to hop-length frames
+        scalograms = []
+        hop = hop_length
+        for channel in audio:
+            # scales: simple linear progression (1..n_scales). More advanced
+            # scale-frequency mapping can be added later.
+            scales = np.arange(1, int(n_wavelet_scales) + 1)
+            coef, freqs = pywt.cwt(channel, scales, wavelet, sampling_period=1.0 / sr)
+            # coef shape: (n_scales, n_samples)
+            mag = np.abs(coef).astype(np.float32)
+
+            n_samples = mag.shape[1]
+            n_frames = int(np.ceil(n_samples / float(hop)))
+            framed = np.zeros((n_frames, mag.shape[0]), dtype=np.float32)
+            for t in range(n_frames):
+                s = t * hop
+                e = min((t + 1) * hop, n_samples)
+                if e <= s:
+                    framed[t, :] = 0.0
+                else:
+                    # average over the time window to reduce to one column per frame
+                    framed[t, :] = mag[:, s:e].mean(axis=1)
+
+            # framed shape: (T, n_scales)
+            scalograms.append(framed)
+
+        # stack channels -> (2, T, n_scales)
+        scalograms = np.stack(scalograms, axis=0)
+        return scalograms
+
     stfts = [
         librosa.stft(y=np.asfortranarray(channel), n_fft=n_fft, hop_length=hop_length,
                      win_length=win_length, window='hann', pad_mode='reflect')
@@ -189,6 +239,115 @@ def extract_stereo_features(audio, sr: int = 24000, n_fft: int = 512, hop_length
         mel_specs = np.dot(mel_specs, W.T)
 
     return mel_specs
+
+
+
+def extract_cwt_6channel_features(audio, sr: int = 24000, hop_length: int = 300,
+                                   wavelet: str = 'morl', n_wavelet_scales: int = 128):
+    """
+    Extract all 6 channels using Continuous Wavelet Transform (CWT) only.
+    
+    Channel layout:
+        1. Left channel CWT scalogram
+        2. Right channel CWT scalogram
+        3. Mid = (L+R)/2 CWT scalogram
+        4. Side = (L-R)/2 CWT scalogram
+        5. CWT-based Intensity Vector (cross-correlation in wavelet domain)
+        6. CWT-based Magnitude-Squared Coherence (MSC) between L/R
+    
+    Args:
+        audio (np.ndarray): Stereo audio signal with shape (2, n_samples).
+        sr (int): Sampling rate. Default is 24000.
+        hop_length (int): Hop length between successive frames. Default is 300.
+        wavelet (str): Wavelet type ('morl', 'mexh', 'gaus1', etc.). Default is 'morl'.
+        n_wavelet_scales (int): Number of wavelet scales. Default is 128.
+    
+    Returns:
+        np.ndarray: Shape (6, T, n_wavelet_scales) containing all 6 channels.
+    """
+    eps = 1e-8
+    scales = np.arange(1, int(n_wavelet_scales) + 1)
+    
+    # Extract CWT scalograms for L, R channels
+    L_channel = audio[0]
+    R_channel = audio[1]
+    
+    def compute_cwt_frames(signal):
+        """Helper: compute CWT and frame-aggregate."""
+        coef, _ = pywt.cwt(signal, scales, wavelet, sampling_period=1.0 / sr)
+        mag = np.abs(coef).astype(np.float32)  # (n_scales, n_samples)
+        
+        n_samples = mag.shape[1]
+        n_frames = int(np.ceil(n_samples / float(hop_length)))
+        framed = np.zeros((n_frames, mag.shape[0]), dtype=np.float32)
+        for t in range(n_frames):
+            s = t * hop_length
+            e = min((t + 1) * hop_length, n_samples)
+            if e > s:
+                framed[t, :] = mag[:, s:e].mean(axis=1)
+        return framed, coef  # return both framed (T, scales) and raw coef (scales, samples)
+    
+    L_frames, L_coef = compute_cwt_frames(L_channel)  # (T, scales), (scales, samples)
+    R_frames, R_coef = compute_cwt_frames(R_channel)  # (T, scales), (scales, samples)
+    
+    # Mid and Side
+    M_signal = (L_channel + R_channel) / 2.0
+    S_signal = (L_channel - R_channel) / 2.0
+    M_frames, M_coef = compute_cwt_frames(M_signal)  # (T, scales), (scales, samples)
+    S_frames, S_coef = compute_cwt_frames(S_signal)  # (T, scales), (scales, samples)
+    
+    # Channel 5: CWT-based Intensity Vector
+    # I = Re(M * S*) / (|M|² + |S|² + ε)
+    # Compute cross-spectrum in wavelet domain and aggregate to frames
+    M_conj_S = M_coef * np.conj(S_coef)  # Element-wise multiply; shape (scales, samples)
+    I_num = np.real(M_conj_S)             # (scales, samples)
+    
+    M_power = np.abs(M_coef) ** 2         # (scales, samples)
+    S_power = np.abs(S_coef) ** 2         # (scales, samples)
+    I_denom = M_power + S_power + eps     # (scales, samples)
+    
+    I_norm = I_num / I_denom              # (scales, samples)
+    
+    # Frame-aggregate intensity
+    n_samples = I_norm.shape[1]
+    n_frames = int(np.ceil(n_samples / float(hop_length)))
+    I_frames = np.zeros((n_frames, n_wavelet_scales), dtype=np.float32)
+    for t in range(n_frames):
+        s = t * hop_length
+        e = min((t + 1) * hop_length, n_samples)
+        if e > s:
+            I_frames[t, :] = I_norm[:, s:e].mean(axis=1)
+    
+    # Channel 6: CWT-based Magnitude-Squared Coherence (MSC)
+    # MSC = |Φ_LR|² / (Φ_LL * Φ_RR + ε)
+    # where Φ_LR = cross-spectrum, Φ_LL/Φ_RR = auto-spectra
+    LR_cross = L_coef * np.conj(R_coef)   # (scales, samples)
+    LL_auto = np.abs(L_coef) ** 2         # (scales, samples)
+    RR_auto = np.abs(R_coef) ** 2         # (scales, samples)
+    
+    MSC_num = np.abs(LR_cross) ** 2       # (scales, samples)
+    MSC_denom = LL_auto * RR_auto + eps   # (scales, samples)
+    MSC = MSC_num / MSC_denom             # (scales, samples)
+    
+    # Frame-aggregate MSC
+    MSC_frames = np.zeros((n_frames, n_wavelet_scales), dtype=np.float32)
+    for t in range(n_frames):
+        s = t * hop_length
+        e = min((t + 1) * hop_length, n_samples)
+        if e > s:
+            MSC_frames[t, :] = MSC[:, s:e].mean(axis=1)
+    
+    # Stack all 6 channels: (6, T, n_scales)
+    channels = np.stack([
+        L_frames,      # Channel 1: L scalogram
+        R_frames,      # Channel 2: R scalogram
+        M_frames,      # Channel 3: Mid scalogram
+        S_frames,      # Channel 4: Side scalogram
+        I_frames,      # Channel 5: Intensity vector (wavelet-domain)
+        MSC_frames,    # Channel 6: MSC (wavelet-domain)
+    ], axis=0)
+    
+    return channels  # (6, T, n_wavelet_scales)
 
 
 

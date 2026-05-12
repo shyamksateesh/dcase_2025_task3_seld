@@ -140,6 +140,13 @@ def main(device, args):
     # Convert and update the params dictionary
     arg_dict = {k: v for k,v in vars(args).items() if v is not None}
     params.update(arg_dict)
+
+    # If using wavelet features and user provided scale count, set nb_mels
+    # so downstream model shape calculations remain consistent.
+    if params.get('use_wavelet', False) and params.get('n_wavelet_scales') is not None:
+        params['nb_mels'] = params['n_wavelet_scales']
+
+
     params['net_type'] = args.exp # Get unique experiment name
     print("Experiment Parameters:")
     for key, value in params.items():
@@ -154,7 +161,7 @@ def main(device, args):
     print(f"Saving best model in: {checkpoints_folder}")
 
     # Feature extraction code.
-    feat_folder = (f"mel{params['nb_mels']}" if params['nb_mels'] else "linspec") + ("_gamma" if params['gamma'] else "") + \
+    feat_folder = (f"mel{params['nb_mels']}" if params['nb_mels'] else "linspec") + ("_wavelet" if params.get('use_wavelet', False) else "") + ("_gamma" if params['gamma'] else "") + \
                   ("_ipd" if params['ipd'] else "") + ("_iv" if params['iv'] else "") + ("_slite" if params['slite'] else "") + \
                   ("_ms" if params['ms'] else "") + ("_dnorm" if params['dnorm'] else "") 
     params['feat_dir'] = os.path.join(params['root_dir'], feat_folder)
@@ -375,6 +382,11 @@ if __name__ == '__main__':
     parser.add_argument('--tr_ff_dim', type=int, default=512)
     parser.add_argument('--tr_rope', action='store_true', default=True)
 
+    # Wavelet
+    parser.add_argument('--use_wavelet', action='store_true', help='Use continuous wavelet transform (CWT) scalogram instead of Mel spectrograms')
+    parser.add_argument('--wavelet', type=str, default='morl', nargs='?', const='morl', help='Wavelet type for CWT (e.g., "morl")')
+    parser.add_argument('--n_wavelet_scales', type=int, default=None, help='Number of wavelet scales (used when --use_wavelet is set)')
+    
     args = parser.parse_args()
 
     import sys

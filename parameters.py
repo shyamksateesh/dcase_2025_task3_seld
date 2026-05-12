@@ -28,6 +28,11 @@ params = {
     'nb_mels': 96,   # Yeow uses 96 mel bins, not 64, so changed that.
     'max_freq': 2000,
 
+    # Wavelet feature Options
+    'use_wavelet': False,
+    'wavelet': 'morl',
+    'n_wavelet_scales': 128,
+
     # video feature extraction params
     'fps': 10,
     'resnet_feature_size': 49,  # (7,7) feature_map for every frame from resnet
@@ -65,6 +70,7 @@ params = {
     'nb_workers': 0,
     'shuffle': True,
     'persistent_workers': False,
+    'prefetch_factor': 4,
 
     # optimizer params
     'learning_rate': 1e-3,

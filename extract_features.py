@@ -63,7 +63,7 @@ class SELDFeatureExtractor():
         print(f"Loading features from: {self.feat_dir}")
 
 
-    def extract_features(self, split='dev'):
+    def extract_features(self, split='dev', num_shards=1, shard_id=0, file_list=None):
         """
         Extracts features
         Args:
@@ -81,6 +81,21 @@ class SELDFeatureExtractor():
 
         output_dir = os.path.join(self.feat_dir, f'stereo_{split}')
         os.makedirs(output_dir, exist_ok=True)
+        # Allow optional external file list (one path per line) to control which files to process
+        if file_list is not None:
+            with open(file_list, 'r') as fh:
+                audio_files = [l.strip() for l in fh if l.strip()]
+
+        # Sort for deterministic sharding and reproducibility
+        audio_files = sorted(audio_files)
+
+        # If sharding is requested, select the subset assigned to this shard.
+        if num_shards is None:
+            num_shards = 1
+        if num_shards > 1:
+            if shard_id < 0 or shard_id >= num_shards:
+                raise ValueError(f"shard_id must be in [0, num_shards-1]. Got shard_id={shard_id}, num_shards={num_shards}")
+            audio_files = [f for i, f in enumerate(audio_files) if (i % num_shards) == shard_id]
 
         with Progress() as progress:
             task = progress.add_task(f"[cyan]Processing {len(audio_files)} audio files ({split})", total=len(audio_files))
@@ -95,9 +110,15 @@ class SELDFeatureExtractor():
 
                 # Load audio and extract stereo features
                 audio, sr = utils.load_audio(audio_file, self.sampling_rate)
-                audio_feat = utils.extract_stereo_features(audio, sr=sr, n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length, 
-                                                           nb_mels=self.nb_mels, max_freq=self.max_freq, use_gamma=self.params['gamma'], use_ipd=self.params['ipd'], 
-                                                           use_iv=self.params['iv'], use_slite=self.params['slite'], use_ms=self.params['ms'])
+                audio_feat = utils.extract_stereo_features(
+                    audio, sr=sr, n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length,
+                    nb_mels=self.nb_mels, max_freq=self.max_freq,
+                    use_gamma=self.params['gamma'], use_ipd=self.params['ipd'], use_iv=self.params['iv'],
+                    use_slite=self.params['slite'], use_ms=self.params['ms'],
+                    use_wavelet=self.params.get('use_wavelet', False),
+                    wavelet=self.params.get('wavelet', 'morl'),
+                    n_wavelet_scales=self.params.get('n_wavelet_scales', self.nb_mels)
+                )
 
                 # Convert to tensor and save
                 audio_feat = torch.tensor(audio_feat, dtype=torch.float32)
@@ -201,39 +222,43 @@ class SELDFeatureExtractor():
                     progress.update(task, advance=1)
 
             # Save the scaler(s)
-            if not os.path.exists(scaler_file):
+            if not os.path.exists(scaler_file) and spec_scalers is not None:
+                num_channels = spec_scalers.__len__()
                 print(f'Initialized 1 shared scaler for the first {n_norm_channels} channels'
                         f'+ {num_channels - n_norm_channels} individual scalers.')
                 joblib.dump(spec_scalers, scaler_file)
                 print(f'Scaler(s) saved to {scaler_file}')
 
         # Normalization preprocessing
-        file_list = os.listdir(unnorm_dir)
-        with Progress() as progress:
-            task = progress.add_task("[yellow]Normalizing features...", total=len(file_list))
-            for file_name in file_list:
-                # Determine filepaths
-                feat_path = os.path.join(unnorm_dir, file_name)
-                normalized_feat_path = os.path.join(norm_dir, file_name)
+        if spec_scalers is not None:
+            file_list = os.listdir(unnorm_dir)
+            with Progress() as progress:
+                task = progress.add_task("[yellow]Normalizing features...", total=len(file_list))
+                for file_name in file_list:
+                    # Determine filepaths
+                    feat_path = os.path.join(unnorm_dir, file_name)
+                    normalized_feat_path = os.path.join(norm_dir, file_name)
 
-                # Check if we have already normalized the file
-                if os.path.exists(normalized_feat_path):
+                    # Check if we have already normalized the file
+                    if os.path.exists(normalized_feat_path):
+                        progress.update(task, advance=1)
+                        continue
+
+                    feat_tensor = torch.load(feat_path)
+                    feat_file = feat_tensor.cpu().numpy()  # Convert to NumPy for processing
+
+                    if feat_file.ndim != 3:
+                        raise ValueError("Feature file has unsupported dimensions: {}".format(feat_file.shape))
+
+                    for ch, scaler in enumerate(spec_scalers):
+                        channel_data = feat_file[ch].reshape(-1, feat_file.shape[2])
+                        normalized_channel = scaler.transform(channel_data)
+                        feat_file[ch] = normalized_channel.reshape(feat_file.shape[1], feat_file.shape[2])
+
+                    # Save the normalized features as a torch tensor
+                    torch.save(torch.tensor(feat_file, dtype=torch.float32), normalized_feat_path)
+                    del feat_file
                     progress.update(task, advance=1)
-                    continue
-
-                feat_tensor = torch.load(feat_path)
-                feat_file = feat_tensor.cpu().numpy()  # Convert to NumPy for processing
-
-                if feat_file.ndim != 3:
-                    raise ValueError("Feature file has unsupported dimensions: {}".format(feat_file.shape))
-
-                for ch, scaler in enumerate(spec_scalers):
-                    channel_data = feat_file[ch].reshape(-1, feat_file.shape[2])
-                    normalized_channel = scaler.transform(channel_data)
-                    feat_file[ch] = normalized_channel.reshape(feat_file.shape[1], feat_file.shape[2])
-
-                # Save the normalized features as a torch tensor
-                torch.save(torch.tensor(feat_file, dtype=torch.float32), normalized_feat_path)
-                del feat_file
-                progress.update(task, advance=1)
-        print(f'Normalized features have been saved to {norm_dir}')
+            print(f'Normalized features have been saved to {norm_dir}')
+        else:
+            print(f'Warning: No scalers available; skipping normalization step.')
